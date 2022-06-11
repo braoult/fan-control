@@ -4,7 +4,8 @@
 CMD="${0##*/}"
 sysdir="/sys/devices/platform/applesmc.768"
 
-declare -a control_file label_file output_file label
+declare -a control_file label_file output_file
+declare -al label
 
 # Match labels with fan number and get control files
 fan_info() {
@@ -13,51 +14,53 @@ fan_info() {
     label_file[$fan]="$sysdir/fan${fan}_label"
     output_file[$fan]="$sysdir/fan${fan}_output"
     read -r label[$fan] < "${label_file[$fan]}"
-    label[$fan]=${label[$fan],,}                  # lowercase
 }
 
-fan_info 1
-if ! [[ "${label[1]}" =~ ^(exhaust|master)$ ]]; then
-	fan_info 2
-	fan_info 3
-fi
-
-# fan() - set fan
+# fan_maybe_set_control()
 # $1 is fan number (starting from 1)
-# $2 is percent to apply
+# $2 is "0" for automatic, "1" for manual
+fan_maybe_set_control() {
+    local -i old fan="$1" value="$2"
+    local -a mode=(auto manual)
+
+    # get previous value
+    read -r old < "${control_file[$fan]}"
+    if [[ "$old" != "$value" ]]; then
+        if echo "$value" > "${control_file[$fan]}"; then
+            printf "fan mode set to %s\n" "${mode[$value]}"
+        else
+            printf "Try running command as root\n"
+        fi
+    fi
+}
+
+# fan_function() - set fan values (automatic/manual & speed)
+# $1 is fan number (starting from 1)
+# $2 is "auto" or percent to apply
 fan_function() {
-    local manual max min
-    local -i fan_100 fan_net fan_final
-    local fan="$1"
-    local percent="$2"                            # "auto" or 0-100
+    local -i max min speed fan="$1"
+    local percent="$2"
 
-    # Getting fan files and data from applesmc.768
-    read -r manual < "${control_file[$fan]}"
-
+    # Get fan data from applesmc.768
     read -r max < "$sysdir/fan${fan}_max"
     read -r min < "$sysdir/fan${fan}_min"
 
-    if [ "$percent" = "auto" ]; then
-        # Switch back fan1 to auto mode
-        echo "0" > "${control_file[$fan]}"
-        printf "fan mode set to auto"
+    if [[ "$percent" = "auto" ]]; then
+        # Set fan auto mode
+        fan_maybe_set_control "$fan" 0
     else
-        #Putting fan on manual mode
-        if [ "$manual" = "0" ]; then
-            echo "1" > "${control_file[$fan]}"
-        fi
+        # Set fan manual mode
+        fan_maybe_set_control "$fan" 1
 
-        # Calculating the net value that will be given to the fans
-        fan_100=$((max - min))
-        # Calculating final percentage value
-        fan_net=$((percent * fan_100 / 100))
-        fan_final=$((fan_net + min))
+        # Calculate the net value that will be given to the fans
+        # formula : speed = min + [ (max - min) / 100 * percent ]
+        speed=$(( min + (max - min) * percent / 100 ))
 
-        # Writing the final value to the applemc files
-        if echo "$fan_final" > "${output_file[$fan]}"; then
-            printf "fan set to %d rpm.\n" "$fan_final"
+        # Write the final value to the applemc file
+        if echo "$speed" > "${output_file[$fan]}"; then
+            printf "fan set to %d rpm.\n" "$speed"
         else
-            printf "Try running command as sudo\n"
+            printf "Try running command as root\n"
         fi
     fi
 }
@@ -69,13 +72,19 @@ usage() {
     exit 1
 }
 
+fan_info 1
+if ! [[ "${label[1]}" =~ ^(exhaust|master)$ ]]; then
+    fan_info 2
+    fan_info 3
+fi
+
 if (($# == 0)); then
     printf "Available fans:\n"
     printf "  %s\n" "${label[1]}"
     if ! [[ "${label[1]}" =~ ^(exhaust|master)$ ]]; then
         printf "  %s\n" "${label[2]}"
         printf "  %s\n" "${label[3]}"
-	fi
+    fi
     exit 0
 fi
 
@@ -92,17 +101,15 @@ fi
 case "$command" in
     ### AUTO CONTROL
     auto)
-        echo "0" > "${control_file[1]}"
-        if [[ "${label[1]}" != "exhaust" ]]; then
-		    echo "0" > "${control_file[2]}"
-		    echo "0" > "${control_file[3]}"
-	    fi
+        for i in {1..3}; do
+            [[ -v label[$i] ]] && fan_maybe_set_control "$i" 0
+        done
         ;;
 
     ####  HDD/CPU/ODD CONTROL
     hdd|cpu|odd)
-        for i in 1 2 3; do
-            if [ "${label[$i]}" = "$command" ]; then
+        for i in {1..3}; do
+            if [[ "${label[$i]}" = "$command" ]]; then
                 fan_function "$i" "$percent"
             fi
         done
