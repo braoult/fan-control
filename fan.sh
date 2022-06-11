@@ -7,13 +7,17 @@ sysdir="/sys/devices/platform/applesmc.768"
 declare -a control_file label_file output_file
 declare -al label
 
-# Match labels with fan number and get control files
-fan_info() {
-    local fan="$1"
-    control_file[$fan]="$sysdir/fan${fan}_manual"
-    label_file[$fan]="$sysdir/fan${fan}_label"
-    output_file[$fan]="$sysdir/fan${fan}_output"
-    read -r label[$fan] < "${label_file[$fan]}"
+# get all fans information
+fans_get_info() {
+    local -i fan=1
+
+    while [[ -f "$sysdir/fan${fan}_label" ]]; do
+        label_file[$fan]="$sysdir/fan${fan}_label"
+        control_file[$fan]="$sysdir/fan${fan}_manual"
+        output_file[$fan]="$sysdir/fan${fan}_output"
+        read -r label[$fan] < "${label_file[$fan]}"
+        (( fan++ ))
+    done
 }
 
 # fan_maybe_set_control()
@@ -72,19 +76,13 @@ usage() {
     exit 1
 }
 
-fan_info 1
-if ! [[ "${label[1]}" =~ ^(exhaust|master)$ ]]; then
-    fan_info 2
-    fan_info 3
-fi
+fans_get_info
 
 if (($# == 0)); then
     printf "Available fans:\n"
-    printf "  %s\n" "${label[1]}"
-    if ! [[ "${label[1]}" =~ ^(exhaust|master)$ ]]; then
-        printf "  %s\n" "${label[2]}"
-        printf "  %s\n" "${label[3]}"
-    fi
+    for fan in "${!label[@]}"; do
+        printf "  %s\n" "${label[$fan]}"
+    done
     exit 0
 fi
 
@@ -101,23 +99,18 @@ fi
 case "$command" in
     ### AUTO CONTROL
     auto)
-        for i in {1..3}; do
-            [[ -v label[$i] ]] && fan_maybe_set_control "$i" 0
+        for fan in "${!label[@]}"; do
+            fan_maybe_set_control "$fan" 0
         done
         ;;
 
-    ####  HDD/CPU/ODD CONTROL
-    hdd|cpu|odd)
-        for i in {1..3}; do
-            if [[ "${label[$i]}" = "$command" ]]; then
-                fan_function "$i" "$percent"
+    ####  HDD/CPU/ODD/EXHAUST/MASTER CONTROL
+    hdd|cpu|odd|exhaust|master)
+        for fan in "${!label[@]}"; do
+            if [[ "${label[$fan]}" = "$command" ]]; then
+                fan_function "$fan" "$percent"
             fi
         done
-        ;;
-
-    ### EXHAUST/MASTER CONTROL
-    exhaust|master)
-        fan_function 1 "$percent"
         ;;
 
     *)
