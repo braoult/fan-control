@@ -106,40 +106,45 @@ fan_function() {
     fi
 }
 
-usage() {
-    cat <<_EOF
-Usage: $CMD [OPTIONS] [FAN] [PERCENT]
-View/set FAN speed on a Mac running a Linux operating system.
-Optional FAN may be "auto", "master", "exhaust", "hdd", "cpu" or "odd". If
-FAN is missing, a list of available fans will be printed.
-If FAN is not "auto", PERCENT is mandatory and should be "auto" or a value
-between 0 and 100.
+# get_command() - validate parameter command
+# $1 is parameter and should be "auto" or the number/name of a fan
+get_command() {
+    local param="$1"
 
-Options:
-    -a, --all    Display all known information on FAN.
-    -h, --help   This help.
-_EOF
-    return 0
+    if [[ $param =~ ^[0-9]+$ ]]; then
+        param="${label[$param]:-invalid}"
+    else
+        if [[ $param != "all" && ! -v revlabel["$param"] ]]; then
+            param=invalid
+        fi
+    fi
+    printf "%s" "$param"
 }
 
 # fan_print() - print fan information
 # $1: fan number or "all"
-# $2: 'list', 'all'
+# $2: 'list', 'all', 'speed'
+# $3: 'y' or 'n' for header
 fan_print() {
     local -a fan=("$1") mode=(auto manual)
     local -i cur
-    local todo="$2"
+    local todo="$2" header="$3"
 
     [[ ${fan[0]} = "all" ]] && fan=( "${!label[@]}" )
     {
-        case "$todo" in
-            list)
-                printf "Fans:\n"
-                ;;
-            all)
-                printf "# fan mode cur min max\n"
-                ;;
-        esac
+        if [[ $header = 'y' ]]; then
+            case "$todo" in
+                list)
+                    printf "Fans:\n"
+                    ;;
+                all)
+                    printf "# fan mode speed wanted min max\n"
+                    ;;
+                speed)
+                    printf "fan speed\n"
+                    ;;
+            esac
+        fi
         for cur in "${fan[@]}"; do
             case "$todo" in
                 list)
@@ -149,17 +154,47 @@ fan_print() {
                     printf "%d %s "  "$cur" "${label[$cur]}"
                     printf "%s "     "${mode[$(fan_get "$cur" manual)]}"
                     printf "%d "     "$(fan_get "$cur" input)"
+                    if [[ ${mode[$(fan_get "$cur" manual)]} == "manual" ]]; then
+                        printf "%d " "$(fan_get "$cur" output)"
+                    else
+                        printf "n/a "
+                    fi
                     printf "%d %d\n" "$(fan_get "$cur" min)" "$(fan_get "$cur" max)"
                     ;;
+                speed)
+                    printf "%s %s\n" "${label[$cur]}" "$(fan_get "$cur" input)"
+                    ;;
+
             esac
         done
-    } | column -t -R 2,3,4,5,6
+    } | column -t -R 2,3,4,5,6,7
+}
+
+usage() {
+    cat <<_EOF
+Usage: $CMD [OPTIONS] [FAN] [PERCENT]
+View/set FAN speed on a Mac running a Linux operating system.
+Optional FAN may be "all", or the number/name of a fan. If FAN is missing, a
+list of available fans is printed.
+If PERCENT is missing, the speed of FAN is printed. Otherwise, its value should
+be "auto" or a value between 0 and 100, and the settings of FAN will be changed
+accordingly.
+
+If many formatting options below are specified, the latest will be used.
+
+Options:
+    -a, --all       Display all known information on FAN.
+    -h, --help      This help.
+    -H, --header    When displaying information, add a header line.
+    -s, --speed     display only speed.
+_EOF
+    return 0
 }
 
 fans_get_info
 
-SOPTS="ah"
-LOPTS="all,help"
+SOPTS="ahHs"
+LOPTS="all,help,header,speed"
 
 if ! TMP=$(getopt -o "$SOPTS" -l "$LOPTS" -n "$CMD" -- "$@"); then
     log "Use '$CMD --help' for help."
@@ -168,61 +203,67 @@ fi
 eval set -- "$TMP"
 unset TMP
 
-toprint="list"
+print_type=list
+print_header=n
 while true; do
     case "$1" in
         -a|--all)
-            toprint="all"
-            shift
+            print_type=all
             ;;
-        -h|--help)
+        -h|--help)a
             usage
             exit 0
+            ;;
+        -H|--header)
+            print_header=y
+            ;;
+        -s|--speed)
+            print_type=speed
             ;;
         '--')
             shift
             break
-
             ;;
     esac
+    shift
 done
 
-if (($# == 0)); then
-    fan_print all "$toprint"
-    exit 0
-fi
+command=""
+percent=-1
 
-# fan type and value
-command="$1"
-if [[ "$command" != "auto" ]]; then
-    if (( $# == 2 )); then
-        percent="$2"
-    else
-        usage
+if (( $# == 0 )); then
+    fan_print "all" "$print_type" "$print_header"
+    exit 0
+else
+    command="$(get_command "$1")"
+    if [[ $command = "invalid" ]]; then
+        printf "%s: no such fan.\n" "$1"
         exit 1
     fi
 fi
 
+# fan type and value
+if (( $# == 2 )); then
+    percent="$2"
+else
+    [[ $print_type = "list" ]] && print_type="speed"
+    fan_print "${revlabel[$command]:-all}" "$print_type" "$print_header"
+    exit 0
+fi
+
 case "$command" in
-    ### AUTO CONTROL
-    auto)
+    all)
         for fan in "${!label[@]}"; do
-            fan_maybe_set_control "$fan" 0
+            fan_function "$fan" "$percent"
         done
         ;;
 
-    ####  HDD/CPU/ODD/EXHAUST/MASTER CONTROL
-    hdd|cpu|odd|exhaust|master)
+    *)
         if [[ -v revlabel["$command"] ]]; then
             fan_function "${revlabel[$command]}" "$percent"
         else
-            printf "%s: no such fan.\n" "$command"
+            printf "%s: no such fan 2.\n" "$command"
             exit 1
         fi
         ;;
-
-    *)
-        printf 'unknown command %s\n' "$command"
-        usage
-        exit 1
 esac
