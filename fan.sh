@@ -106,19 +106,32 @@ fan_function() {
     fi
 }
 
-# get_command() - validate parameter command
-# $1 is parameter and should be "auto" or the number/name of a fan
-get_command() {
-    local param="$1"
+# target_normalize() - test command-line "fan" parameter
+# $1: reference parameter and should be "", "all" or the number/name of a fan
+target_normalize() {
+    local -n param="$1"
 
     if [[ $param =~ ^[0-9]+$ ]]; then
-        param="${label[$param]:-invalid}"
+        ! [[ -v label["$param"] ]] && return 1
+        param=${label[$param]}
     else
-        if [[ $param != "all" && ! -v revlabel["$param"] ]]; then
-            param=invalid
-        fi
+        ! [[ $param =~ ^(all|)$ || -v revlabel["$param"] ]] && return 1
+        param=all
     fi
-    printf "%s" "$param"
+    return 0
+}
+
+# value_normalize() - test command-line "value" parameter
+# $1: reference parameter and should be "", "auto" or an 0-100 integer
+value_normalize() {
+    local -n param="$1"
+
+    if [[ $param =~ ^[0-9]+$ ]]; then
+        (( param < 0 || param > 100 )) && return 1
+    else
+        ! [[ $param =~ ^(auto|)$ ]] && return 1
+    fi
+    return 0
 }
 
 # fan_print() - print fan information
@@ -186,15 +199,14 @@ Options:
     -a, --all       Display all known information on FAN.
     -h, --help      This help.
     -H, --header    When displaying information, add a header line.
-    -s, --speed     display only speed.
+    -r, --root ROOT Use ROOT directory instead of / (development only).
+    -s, --speed     Display only speed. Implied is FAN is specified.
 _EOF
     return 0
 }
 
-fans_get_info
-
-SOPTS="ahHs"
-LOPTS="all,help,header,speed"
+SOPTS="ahHr:s"
+LOPTS="all,help,header,root:,speed"
 
 if ! TMP=$(getopt -o "$SOPTS" -l "$LOPTS" -n "$CMD" -- "$@"); then
     log "Use '$CMD --help' for help."
@@ -203,8 +215,9 @@ fi
 eval set -- "$TMP"
 unset TMP
 
-print_type=list
-print_header=n
+declare print_type=list
+declare print_header=n
+
 while true; do
     case "$1" in
         -a|--all)
@@ -217,6 +230,15 @@ while true; do
         -H|--header)
             print_header=y
             ;;
+        -r|--root)
+            sysdir="$2/$sysdir"
+            if [[ ! -d "$sysdir" ]]; then
+                printf "%s: Not a directory.\n" "$sysdir"
+                exit 1
+            fi
+            printf "root-directory set to %s.\n" "$2"
+            shift
+            ;;
         -s|--speed)
             print_type=speed
             ;;
@@ -228,42 +250,46 @@ while true; do
     shift
 done
 
-command=""
-percent=-1
+fans_get_info
 
-if (( $# == 0 )); then
-    fan_print "all" "$print_type" "$print_header"
-    exit 0
-else
-    command="$(get_command "$1")"
-    if [[ $command = "invalid" ]]; then
-        printf "%s: no such fan.\n" "$1"
-        exit 1
-    fi
+declare target="$1"
+declare percent="$2"
+declare -a list
+
+if ! target_normalize target; then
+    printf "%s: no such fan.\n" "$target"
+    exit 1
 fi
+printf "target=%s\n" "$target"
 
-# fan type and value
-if (( $# == 2 )); then
-    percent="$2"
-else
-    [[ $print_type = "list" ]] && print_type="speed"
-    fan_print "${revlabel[$command]:-all}" "$print_type" "$print_header"
-    exit 0
+if ! value_normalize percent; then
+    printf "%s: invalid value, should be 0-100 or 'auto'" "$percent"
+    exit 1
 fi
+printf "percent=%d\n" "$percent"
 
-case "$command" in
-    all)
-        for fan in "${!label[@]}"; do
+for i in "${!revlabel[@]}"; do
+    printf "rev[%s]=%s\n" "$i" "${revlabel[$i]}"
+done
+for i in "${!label[@]}"; do
+    printf "lab[%s]=%s\n" "$i" "${label[$i]}"
+done
+
+# default output is speed is only fan on command-line
+(( $# == 1 )) && [[ $print_type = "list" ]] && print_type="speed"
+
+case $# in
+    0|1)
+        fan_print "${revlabel[$target]:-all}" "$print_type" "$print_header"
+        exit 0
+        ;;
+    2)
+        if [[ "$target" = "all" ]]; then
+            list=( "${!label[@]}" )
+        else
+            list=( "${revlabel[$target]}" )
+        fi
+        for fan in "${list[@]}"; do
             fan_function "$fan" "$percent"
         done
-        ;;
-
-    *)
-        if [[ -v revlabel["$command"] ]]; then
-            fan_function "${revlabel[$command]}" "$percent"
-        else
-            printf "%s: no such fan 2.\n" "$command"
-            exit 1
-        fi
-        ;;
 esac
